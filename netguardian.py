@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-NetGuardian CLI v1.1 (Algo-Enhanced)
+NetGuardian CLI v1.2 (Curve & Community)
 基于 VMN 框架的网络关键性深度分析工具
-更新日志 v1.1: 
-- 新增：异质性二阶修正算法 (Heterogeneity Correction)
-- 新增：针对性攻击仿真 (Targeted Attack Simulation) 以验证预测
-- 新增：代数连通度 (Algebraic Connectivity) 计算
+更新日志 v1.2: 
+- 新增：鲁棒性曲线 (Robustness Curve) 生成器
+- 新增：社区发现 (Community Detection) 与模块度分析
 """
 
 import argparse
@@ -123,42 +122,98 @@ class VMNAnalyzer:
 
     def simulate_targeted_attack(self, G, fraction=0.05):
         """
-        【算法升级 3】: 针对性攻击仿真 (验证预测)
-        模拟移除最重要的 5% 节点 (按度排序)，观察网络崩塌情况
-        这是一种“数字孪生”级别的验证，比单纯公式更可信
+        【v1.1 遗留】: 针对性攻击仿真 (单点验证)
         """
-        self.log(f"启动攻击仿真：移除 Top {fraction*100}% 关键节点...")
-        
-        # 1. 计算初始最大连通子图大小
-        initial_lcc = max(nx.connected_components(G), key=len)
-        size_before = len(initial_lcc)
-        
-        # 2. 识别关键节点 (按 Degree 排序)
-        nodes_by_degree = sorted(G.degree(), key=lambda x: x[1], reverse=True)
-        num_nodes_to_remove = max(1, int(len(G.nodes()) * fraction))
-        targets = [n for n, d in nodes_by_degree[:num_nodes_to_remove]]
-        
-        # 3. 执行移除
-        H = G.copy()
-        H.remove_nodes_from(targets)
-        
-        # 4. 计算移除后的大小
-        if H.number_of_nodes() == 0:
-            size_after = 0
-        else:
-            final_lcc = max(nx.connected_components(H), key=len)
-            size_after = len(final_lcc)
-        
-        # 5. 计算损伤指数 (Damage Index)
-        damage = (size_before - size_after) / size_before if size_before > 0 else 1.0
-        
-        self.log(f"仿真结束。损伤指数: {damage:.4f}")
-        
+        sim_data = self.generate_robustness_curve(G, max_fraction=fraction)
+        # 返回最后一点的数据
+        last_point = sim_data[-1]
         return {
-            "removed_nodes": num_nodes_to_remove,
-            "damage_index": damage,
-            "resilience": 1.0 - damage
+            "removed_nodes": last_point[0],
+            "damage_index": 1.0 - (last_point[1] / 100.0),
+            "resilience": last_point[1] / 100.0,
+            "full_curve": sim_data
         }
+
+    def generate_robustness_curve(self, G, max_fraction=0.2, steps=20):
+        """
+        【算法升级 v1.2】: 鲁棒性曲线生成
+        模拟逐步移除节点 (1% -> 20%) 时的最大连通子图衰减情况
+        返回数据: List of (remove_pct, giant_component_pct)
+        """
+        self.log("开始生成鲁棒性曲线...")
+        
+        # 1. 初始状态
+        initial_lcc_size = len(max(nx.connected_components(G), key=len))
+        curve_data = [(0.0, 100.0)]
+        
+        # 2. 复制图用于操作
+        H = G.copy()
+        
+        # 3. 预计算节点重要性 (按度排序 - 静态攻击策略)
+        nodes_by_degree = [n for n, d in sorted(H.degree(), key=lambda x: x[1], reverse=True)]
+        
+        total_nodes = G.number_of_nodes()
+        total_to_remove = int(total_nodes * max_fraction)
+        
+        # 4. 逐步移除
+        nodes_removed_count = 0
+        
+        for step in range(1, steps + 1):
+            # 计算这一步应该移除的节点总数
+            target_count = int(total_nodes * (step / steps) * max_fraction)
+            
+            # 确定本次要移除的节点 (增量)
+            current_victims = nodes_by_degree[nodes_removed_count:target_count]
+            
+            if current_victims:
+                H.remove_nodes_from(current_victims)
+                nodes_removed_count = target_count
+            
+            # 计算当前 LCC
+            if H.number_of_nodes() == 0:
+                current_lcc_pct = 0.0
+            else:
+                try:
+                    current_lcc = max(nx.connected_components(H), key=len)
+                    current_lcc_pct = (len(current_lcc) / initial_lcc_size) * 100.0
+                except:
+                    current_lcc_pct = 0.0
+            
+            remove_pct_display = (nodes_removed_count / total_nodes) * 100
+            curve_data.append((remove_pct_display, current_lcc_pct))
+            
+            # 提前终止：如果网络已经完全破碎
+            if current_lcc_pct < 1.0:
+                break
+                
+        self.log(f"鲁棒性曲线生成完毕，共 {len(curve_data)} 个数据点。")
+        return curve_data
+
+    def detect_communities(self, G):
+        """
+        【算法升级 v1.2】: 社区发现
+        使用 Louvain/Greedy Modularity 算法识别网络中的社团结构
+        """
+        self.log("执行社区发现算法...")
+        try:
+            communities = nx.community.greedy_modularity_communities(G)
+            modularity = nx.community.modularity(G, communities)
+            
+            # 转换为节点到社区的映射
+            node_community_map = {}
+            for i, comm in enumerate(communities):
+                for node in comm:
+                    node_community_map[node] = i
+                    
+            return {
+                "map": node_community_map,
+                "count": len(communities),
+                "modularity": modularity,
+                "sizes": [len(c) for c in communities]
+            }
+        except Exception as e:
+            self.log(f"社区发现失败：{e}")
+            return {"map": {}, "count": 0, "modularity": 0.0, "sizes": []}
 
     def generate_report(self, topo, pred, sim, output_path):
         """生成 v1.1 增强版报告"""
@@ -193,8 +248,8 @@ class VMNAnalyzer:
         </head>
         <body>
             <div class="header">
-                <h1>🛡️ NetGuardian 深度分析报告 (v1.1)</h1>
-                <p>算法引擎：VMN 异质性修正 + 仿真验证 | 生成时间：{datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
+                <h1>🛡️ NetGuardian 深度分析报告 (v1.2)</h1>
+                <p>算法引擎：VMN 异质性修正 + 鲁棒性曲线 + 仿真验证 | 生成时间：{datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
             </div>
 
             <div class="card">
